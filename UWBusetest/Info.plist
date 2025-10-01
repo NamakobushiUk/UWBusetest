@@ -12,5 +12,9 @@
 		<string>_ni-demo._tcp.</string>
 	</array>
     
+    <key>NSNearbyInteractionUsageDescription</key>
+    <string>近くのデバイスとの距離や方向を測定するために使用します。</string>
+
+    
 </dict>
 </plist>
