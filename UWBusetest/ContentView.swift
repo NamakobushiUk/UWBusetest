@@ -37,6 +37,43 @@ struct LogEntry: Identifiable, Equatable {
     }
 }
 
+struct UWBPlotView: View {
+    var positions: [CGPoint] // 相手の座標履歴を渡す
+    
+    var body: some View {
+        GeometryReader { geo in
+            ZStack {
+                // 背景（座標軸）
+                Rectangle()
+                    .fill(Color(.systemBackground))
+                Path { path in
+                    let midX = geo.size.width / 2
+                    let midY = geo.size.height / 2
+                    path.move(to: CGPoint(x: midX, y: 0))
+                    path.addLine(to: CGPoint(x: midX, y: geo.size.height))
+                    path.move(to: CGPoint(x: 0, y: midY))
+                    path.addLine(to: CGPoint(x: geo.size.width, y: midY))
+                }
+                .stroke(Color.gray.opacity(0.5), lineWidth: 1)
+
+                // 相手の位置履歴
+                ForEach(positions.indices, id: \.self) { i in
+                    let p = positions[i]
+                    Circle()
+                        .fill(i == positions.count - 1 ? Color.red : Color.blue)
+                        .frame(width: 8, height: 8)
+                        .position(
+                            x: geo.size.width/2 + p.x * 50, // スケール調整
+                            y: geo.size.height/2 - p.y * 50
+                        )
+                }
+            }
+        }
+    }
+}
+
+
+
 // MARK: - ContentView (全体)
 struct ContentView: View {
     @StateObject private var nearbyManager = NearbyInteractionManager()
@@ -47,6 +84,10 @@ struct ContentView: View {
     // メッセージ送受信用
     @State private var message: String = ""
     @State private var receivedMessages: [String] = []
+
+    //位置情報プロット用
+    @State private var positions: [CGPoint] = []
+
 
     var body: some View {
         VStack(spacing: 12) {
@@ -124,6 +165,10 @@ struct ContentView: View {
 
             Divider().padding(.vertical, 6)
 
+            UWBPlotView(positions: positions)
+                .frame(height: 300)
+                .padding()
+
             // ログ表示（スクロール）
             Text("ログ")
                 .font(.headline)
@@ -165,6 +210,15 @@ struct ContentView: View {
         .onChange(of: nearbyManager.permissionDeniedFlag) { v in
             if v { showPermissionAlert = true }
         }
+        //プロットグラフ
+        .onChange(of: nearbyManager.lastDirection) { newDir in
+            if let dir = newDir, let dist = nearbyManager.lastDistance {
+                let x = CGFloat(dir.x) * CGFloat(dist)
+                let y = CGFloat(dir.y) * CGFloat(dist)
+                positions.append(CGPoint(x: x, y: y))
+            }
+        }
+
         .alert("Nearby Interaction の許可が必要です", isPresented: $showPermissionAlert) {
             Button("設定を開く") {
                 if let url = URL(string: UIApplication.openSettingsURLString) {
