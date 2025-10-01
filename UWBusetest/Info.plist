@@ -4,11 +4,13 @@
 <dict>
     <key>NSLocalNetworkUsageDescription</key>
     <string>近くのデバイスを検出して接続するためにローカルネットワークへのアクセスが必要です。接続を許可してください。</string>
-    <key>NSBonjourServices</key>
-    <array>
-        <string>_ni-demo._tcp.</string>
-    </array>
-
-    <!-- 既存の他のキーがあればここに残してください -->
+    <key>com.apple.developer.nearby-interaction</key>
+    <true/>
+    
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_ni-demo._tcp.</string>
+	</array>
+    
 </dict>
 </plist>
