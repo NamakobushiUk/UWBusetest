@@ -44,6 +44,10 @@ struct ContentView: View {
 
     @State private var showPermissionAlert = false
 
+    // メッセージ送受信用
+    @State private var message: String = ""
+    @State private var receivedMessages: [String] = []
+
     var body: some View {
         VStack(spacing: 12) {
             Text("Nearby Interaction Demo")
@@ -95,6 +99,31 @@ struct ContentView: View {
 
             Divider().padding(.vertical, 6)
 
+            // メッセージ送信欄
+            HStack {
+                TextField("メッセージを入力", text: $message)
+                    .textFieldStyle(RoundedBorderTextFieldStyle())
+                Button("送信") {
+                    peerSession.sendMessage(message)
+                    message = ""
+                }
+            }
+            .padding(.vertical, 6)
+
+            // 受信メッセージ表示
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(receivedMessages, id: \.self) { msg in
+                    Text("📩 \(msg)")
+                        .font(.footnote)
+                        .padding(4)
+                        .background(Color(.secondarySystemBackground))
+                        .cornerRadius(6)
+                }
+            }
+            .frame(maxHeight: 150)
+
+            Divider().padding(.vertical, 6)
+
             // ログ表示（スクロール）
             Text("ログ")
                 .font(.headline)
@@ -119,22 +148,20 @@ struct ContentView: View {
         }
         .padding()
         .onAppear {
-            // 自動で自分の discovery token を作る（ユーザーに許可ダイアログが出る場合あり）
             nearbyManager.prepareMySession()
             peerSession.log("onAppear: prepareMySession() 呼び出し済み")
+
+            // メッセージ受信ハンドラ設定
+            peerSession.onPeerMessage = { text in
+                receivedMessages.append(text)
+            }
         }
-        // 受信 token が来たら自動で run を呼び、まだ自分の token を送っていなければ返信（リトライ）する
         .onChange(of: peerSession.receivedTokenData) { newData in
             guard let data = newData else { return }
             nearbyManager.log("ContentView observed receivedTokenData (\(data.count) bytes)")
-
-            // 受け取った token でセッション開始（相手が待っている場合があるため即 run）
             nearbyManager.runMySession(peerTokenData: data)
-
-            // 自分の token がまだ生成されていない可能性があるため、リトライで返信
             sendMyTokenWithRetryIfNeeded(retryCount: 6, delay: 0.5)
         }
-        // NearbyInteractionManager が "permission required" を指示したらアラートを出す
         .onChange(of: nearbyManager.permissionDeniedFlag) { v in
             if v { showPermissionAlert = true }
         }
@@ -150,7 +177,6 @@ struct ContentView: View {
         }
     }
 
-    // ContentView 内のメソッド（置き換え）
     private func sendMyTokenWithRetryIfNeeded(retryCount: Int, delay: TimeInterval) {
         guard retryCount > 0 else {
             peerSession.log("sendMyTokenWithRetryIfNeeded: 自分の token 返信に失敗（timeout）")
@@ -160,18 +186,15 @@ struct ContentView: View {
             peerSession.log("sendMyTokenWithRetryIfNeeded: 自分の token を返信します (\(myToken.count) bytes)")
             peerSession.sendToken(myToken)
         } else {
-            // capture list を使わずに普通に再帰呼び出し（struct に対して weak は不要）
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
                 self.sendMyTokenWithRetryIfNeeded(retryCount: retryCount - 1, delay: delay)
             }
         }
     }
 
-
-    // ログを結合して日付順にソート（古い→新しい）。UI では reversed() で最新上にできる。
     private func mergedLogs() -> [LogEntry] {
         let all = nearbyManager.logs + peerSession.logs
-        return all.sorted { $0.date < $1.date } // 古い順
+        return all.sorted { $0.date < $1.date }
     }
 }
 
@@ -179,13 +202,9 @@ struct ContentView: View {
 class NearbyInteractionManager: NSObject, ObservableObject, NISessionDelegate {
     @Published var niSession: NISession? = nil
     @Published var myTokenData: Data? = nil
-
-    @Published var lastDistance: Double? = nil       // meters
+    @Published var lastDistance: Double? = nil
     @Published var lastDirection: SIMD3<Float>? = nil
-
     @Published var logs: [LogEntry] = []
-
-    // フラグ: ユーザー許可が拒否されていることを外部に通知するため
     @Published var permissionDeniedFlag: Bool = false
 
     func log(_ s: String) {
@@ -202,22 +221,16 @@ class NearbyInteractionManager: NSObject, ObservableObject, NISessionDelegate {
             log("NISession はこのデバイスでサポートされていません。")
             return
         }
-
-        // 既存セッションがあれば invalidate してから作り直す（安全策）
         if niSession != nil {
             niSession?.invalidate()
             niSession = nil
         }
-
         niSession = NISession()
         niSession?.delegate = self
-
         if let discoveryToken = niSession?.discoveryToken {
             do {
                 let data = try NSKeyedArchiver.archivedData(withRootObject: discoveryToken, requiringSecureCoding: true)
-                DispatchQueue.main.async {
-                    self.myTokenData = data
-                }
+                DispatchQueue.main.async { self.myTokenData = data }
                 log("myTokenData を作成しました（\(data.count) bytes）")
             } catch {
                 log("トークンのアーカイブに失敗: \(error)")
@@ -228,13 +241,11 @@ class NearbyInteractionManager: NSObject, ObservableObject, NISessionDelegate {
     }
 
     func runMySession(peerTokenData: Data) {
-        // セッションが無ければ作る（prepareMySession を呼んでおくのが理想）
         if niSession == nil {
             niSession = NISession()
             niSession?.delegate = self
             log("runMySession: niSession が未作成だったため新規作成しました。")
         }
-
         do {
             let peerToken = try NSKeyedUnarchiver.unarchivedObject(ofClass: NIDiscoveryToken.self, from: peerTokenData)
             guard let token = peerToken else {
@@ -249,26 +260,17 @@ class NearbyInteractionManager: NSObject, ObservableObject, NISessionDelegate {
         }
     }
 
-    // MARK: - NISessionDelegate
     func session(_ session: NISession, didInvalidateWith error: Error) {
         let nsErr = error as NSError
         log("NISession invalidated. localizedDescription: \(error.localizedDescription)")
-        log(" NSError domain: \(nsErr.domain) code: \(nsErr.code) userInfo: \(nsErr.userInfo)")
-
-        // NearbyInteraction の「ユーザーが許可しなかった」エラーならフラグを立てる
-        // code -5884 が NIERROR_USER_DID_NOT_ALLOW_... に対応
         if nsErr.domain == "com.apple.NearbyInteraction" && nsErr.code == -5884 {
-            DispatchQueue.main.async {
-                self.permissionDeniedFlag = true
-            }
-            log("Nearby Interaction の許可が拒否されています（設定 → プライバシー → ローカルネットワーク を確認してください）")
+            DispatchQueue.main.async { self.permissionDeniedFlag = true }
+            log("Nearby Interaction の許可が拒否されています")
         }
-
         DispatchQueue.main.async {
             self.lastDistance = nil
             self.lastDirection = nil
         }
-        // 自動再準備はコメントアウトあるいは短時間後に行う（ここでは安全に再準備）
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
             self?.prepareMySession()
         }
@@ -283,8 +285,6 @@ class NearbyInteractionManager: NSObject, ObservableObject, NISessionDelegate {
             }
             return
         }
-
-        // 距離
         if let floatDistance = obj.distance {
             let d = Double(floatDistance)
             DispatchQueue.main.async { self.lastDistance = d }
@@ -293,8 +293,6 @@ class NearbyInteractionManager: NSObject, ObservableObject, NISessionDelegate {
             DispatchQueue.main.async { self.lastDistance = nil }
             log("距離情報がありません。")
         }
-
-        // 方向（単位ベクトル）
         if let dir = obj.direction {
             DispatchQueue.main.async { self.lastDirection = dir }
             log(String(format: "方向更新: x:%.3f y:%.3f z:%.3f", dir.x, dir.y, dir.z))
@@ -316,6 +314,9 @@ class MCPeerIDSession: NSObject, ObservableObject {
     @Published var receivedTokenData: Data? = nil
     @Published var isConnected: Bool = false
     @Published var logs: [LogEntry] = []
+
+    // メッセージ受信ハンドラ
+    var onPeerMessage: ((String) -> Void)?
 
     override init() {
         self.peerID = MCPeerID(displayName: UIDevice.current.name)
@@ -362,37 +363,67 @@ class MCPeerIDSession: NSObject, ObservableObject {
             log("トークン送信失敗: \(error)")
         }
     }
+
+    func sendMessage(_ text: String) {
+        guard session.connectedPeers.count > 0 else {
+            log("送信先ピアがいません。")
+            return
+        }
+        if let data = text.data(using: .utf8) {
+            do {
+                try session.send(data, toPeers: session.connectedPeers, with: .reliable)
+                log("メッセージ送信成功: \(text)")
+            } catch {
+                log("メッセージ送信失敗: \(error)")
+            }
+        }
+    }
 }
 
 // MARK: - MC Delegates
 extension MCPeerIDSession: MCSessionDelegate, MCNearbyServiceAdvertiserDelegate, MCNearbyServiceBrowserDelegate {
-    // MCSessionDelegate
     func session(_ session: MCSession, peer peerID: MCPeerID, didChange state: MCSessionState) {
         DispatchQueue.main.async {
             self.isConnected = (state == .connected)
         }
         log("\(peerID.displayName) の接続状態: \(state.rawValue)")
+        
+//        //自動で再接続を試みる
+//        if state == .notConnected {
+//            // 接続が切れたら再探索
+//            log("接続が切れたので再探索を開始します")
+//            advertiser.stopAdvertisingPeer()
+//            browser.stopBrowsingForPeers()
+//            advertiser.startAdvertisingPeer()
+//            browser.startBrowsingForPeers()
+//        }
     }
 
     func session(_ session: MCSession, didReceive data: Data, fromPeer peerID: MCPeerID) {
-        DispatchQueue.main.async {
-            self.receivedTokenData = data
+        if let text = String(data: data, encoding: .utf8) {
+            // UTF-8 として解釈できればメッセージ
+            DispatchQueue.main.async {
+                self.onPeerMessage?(text)
+            }
+            log("📩 メッセージ受信 from \(peerID.displayName): \(text)")
+        } else {
+            // それ以外はトークンデータとして扱う
+            DispatchQueue.main.async {
+                self.receivedTokenData = data
+            }
+            log("トークンデータ受信: \(data.count) bytes from \(peerID.displayName)")
         }
-        log("データ受信: \(data.count) bytes from \(peerID.displayName)")
     }
 
-    // 必須メソッド（使わない場合は空実装）
     func session(_ session: MCSession, didReceive stream: InputStream, withName streamName: String, fromPeer peerID: MCPeerID) {}
     func session(_ session: MCSession, didStartReceivingResourceWithName resourceName: String, fromPeer peerID: MCPeerID, with progress: Progress) {}
     func session(_ session: MCSession, didFinishReceivingResourceWithName resourceName: String, fromPeer peerID: MCPeerID, at localURL: URL?, withError error: Error?) {}
 
-    // MCNearbyServiceAdvertiserDelegate
     func advertiser(_ advertiser: MCNearbyServiceAdvertiser, didReceiveInvitationFromPeer peerID: MCPeerID, withContext context: Data?, invitationHandler: @escaping (Bool, MCSession?) -> Void) {
         log("招待を受信: \(peerID.displayName) — 自動承認します。")
         invitationHandler(true, self.session)
     }
 
-    // MCNearbyServiceBrowserDelegate
     func browser(_ browser: MCNearbyServiceBrowser, foundPeer peerID: MCPeerID, withDiscoveryInfo info: [String : String]?) {
         log("ピア発見: \(peerID.displayName) — 自動で招待を送信します。")
         browser.invitePeer(peerID, to: self.session, withContext: nil, timeout: 10)
